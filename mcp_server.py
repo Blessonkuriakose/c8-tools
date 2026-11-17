@@ -1,22 +1,52 @@
-"""Part 2: the same tool on the sheet's side, as an MCP server.  Run: python mcp_server.py
-The steps are in README.md."""
-import csv, io, socket
+import csv
+import io
+import os
+import socket
 from typing import Annotated
-import requests
+from dotenv import load_dotenv
 from fastmcp import FastMCP
+import requests
 
-SHEET = "https://docs.google.com/spreadsheets/d/1Kg6T-dJWaYx_JCPiRk3u0nBuAQcsCVRDPj1NFKP4WzM/gviz/tq?tqx=out:csv&headers=0&gid=368290478"
+load_dotenv()
 
-mcp = FastMCP("100x curriculum")
+COURSE_SHEET_ENDPOINT = "https://docs.google.com/spreadsheets/d/1Kg6T-dJWaYx_JCPiRk3u0nBuAQcsCVRDPj1NFKP4WzM/gviz/tq?tqx=out:csv&headers=0&gid=368290478"
 
-# Step 1. Move get_lecture here from tool_call.py and put @mcp.tool on the line above it.
-
-# Step 2. Write the card into the function itself: a docstring and a type hint.
+mcp = FastMCP("Cohort8 Curriculum Service")
 
 
-# Any app can now reach it at http://localhost:8000/mcp
+def is_port_open(target_port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        return sock.connect_ex((host, target_port)) == 0
+
+
+@mcp.tool
+def get_lecture(
+    number: Annotated[int, "The 100x Cohort lecture number between 1 and 19."]
+) -> dict:
+    """Fetch details for 100x Cohort sessions, including date, topic, format, and tools covered."""
+    resp = requests.get(COURSE_SHEET_ENDPOINT, timeout=15)
+    resp.raise_for_status()
+
+    prefix = f"{number}. "
+    for date_val, title_val, type_val, tools_val, *_ in csv.reader(io.StringIO(resp.text)):
+        if title_val.strip().startswith(prefix):
+            return {
+                "date": date_val.strip(),
+                "title": title_val.strip(),
+                "type": type_val.strip(),
+                "tools": tools_val.strip(),
+            }
+
+    return {"error": f"Lecture {number} was not found. Valid numbers are 1 through 19."}
+
+
 if __name__ == "__main__":
-    if socket.socket().connect_ex(("127.0.0.1", 8000)) == 0:
-        raise SystemExit("Port 8000 is already in use, probably by a server you started earlier. "
-                         "Stop it with Ctrl+C in its terminal, or run: kill $(lsof -t -i:8000)")
-    mcp.run(transport="http", port=8000)
+    app_port = int(os.getenv("PORT", "8000"))
+
+    if is_port_open(app_port):
+        raise SystemExit(
+            f"Port {app_port} is currently occupied. Terminate any existing server process before restarting."
+        )
+
+    mcp.run(transport="http", host="0.0.0.0", port=app_port)
