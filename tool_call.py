@@ -1,5 +1,9 @@
-"""Part 1: your first tool call.  Run: python tool_call.py
-The steps are in README.md. Each one adds a few lines to the bottom of this file."""
+"""Part 1: your first tool call.
+Steps 2 to 5: The card, running requests, and the complete loop.
+Run:
+  python tool_call.py                                  # Asks tool, retrieves data, answers
+  python tool_call.py "What is an API?"                # Answers on its own without calling tool
+"""
 import csv, io, json, os, sys
 import requests
 from dotenv import load_dotenv
@@ -8,18 +12,29 @@ load_dotenv()
 if not os.environ.get("GROQ_API_KEY"):
     raise SystemExit("No GROQ_API_KEY found. Make a file called .env next to tool_call.py with one line: GROQ_API_KEY=your key")
 
-# ---------- THE SHEET (given) ----------
-# Plain code, no model: one lecture of the course sheet, looked up by its number.
-SHEET = "https://docs.google.com/spreadsheets/d/1Kg6T-dJWaYx_JCPiRk3u0nBuAQcsCVRDPj1NFKP4WzM/gviz/tq?tqx=out:csv&headers=0&gid=368290478"
-
-def get_lecture(number):
-    for row in csv.reader(io.StringIO(requests.get(SHEET).text)):
-        if row[1].startswith(f"{number}. "):
-            return {"date": row[0], "title": row[1], "type": row[2], "tools": row[3]}
-    return {"error": f"There is no lecture {number}. Lectures run from 1 to 19."}
+# ---------- THE DATA (from instruments.csv) ----------
+def search_instruments(query):
+    items = []
+    with open("instruments.csv", mode="r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            name = (row.get("Instrument Name / Model") or "").strip()
+            if not name or name.upper() == "TOTAL":
+                continue
+            if query.lower() in name.lower() or query.lower() in (row.get("Instrument Type") or "").lower():
+                qty = int(row.get("Quantity") or 0)
+                cost = float(row.get("Purchase Cost (INR)") or 0)
+                sell = float(row.get("Selling Price (INR)") or 0)
+                items.append({
+                    "name": name,
+                    "type": row.get("Instrument Type"),
+                    "purchase_cost": cost,
+                    "selling_price": sell,
+                    "quantity": qty,
+                    "profit": (sell - cost) * qty
+                })
+    return items or {"error": f"No instrument found matching '{query}'"}
 
 # ---------- THE MODEL (given) ----------
-# One message to Groq, one message back. Nothing is added that you do not send.
 def ask_model(messages, tools=None):
     body = {"model": "openai/gpt-oss-120b", "messages": messages}
     if tools:
@@ -29,41 +44,37 @@ def ask_model(messages, tools=None):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]
 
-# ---------- YOUR SERVER (yours to write) ----------
-# python tool_call.py                      asks the question below
-# python tool_call.py "What is an API?"    asks your own
-question = " ".join(sys.argv[1:]) or "When is Lecture 12 of 100xEngineers Cohort 8, and what is it about?"
+# ---------- YOUR SERVER ----------
+question = " ".join(sys.argv[1:]) or "What is the selling price and profit of the Yamaha F310 Acoustic Guitar?"
 messages = [{"role": "user", "content": question}]
 
-# Step 2. The card: fill in the two empty strings.
-card = {
-    "type": "function", "function": {
-    "name": "get_lecture",
-    "description": "get the lecture details of 100x cohort",                                                    # Use it when
-    "parameters": 
-    {"type": "object",
-                   "properties": {
-                    "number": {
-                        "type": "integer",
-                        "description": "lecture number"}
-                        },         # It needs
-                   "required": ["number"]},
+# Step 2. The card
+card = {"type": "function", "function": {
+    "name": "search_instruments",
+    "description": "Look up an instrument in the purchase & profit register by model name or category to find its cost, selling price, quantity, and profit",
+    "parameters": {"type": "object",
+                   "properties": {"query": {"type": "string",
+                                             "description": "The instrument name, model, or category to look up"}},
+                   "required": ["query"]},
 }}
 
-reply = ask_model(messages,[card])                 
+# Send question and card to model
+reply = ask_model(messages, [card])
 
-
-
+# Step 5: Loop while the model asks for tool calls.
+# If the question doesn't need a tool (e.g. "What is an API?"), reply has no tool_calls and the loop is skipped.
 while reply.get("tool_calls"):
     messages.append(reply)
     for call in reply["tool_calls"]:
         args = json.loads(call["function"]["arguments"])
-        print(args)
-        result = get_lecture(**args)
-        messages.append(
-            {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result)}
-        )
+        result = search_instruments(**args)
+        # Step 4: Hand the result back to messages with role "tool"
+        messages.append({
+            "role": "tool",
+            "tool_call_id": call["id"],
+            "content": json.dumps(result)
+        })
     reply = ask_model(messages, [card])
-print("\n" + reply["content"])
 
-# Step 5. Turn steps 3 and 4 into a loop.
+# Print final answer
+print(reply["content"])
